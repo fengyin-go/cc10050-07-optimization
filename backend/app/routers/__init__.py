@@ -1,6 +1,6 @@
-"""业务路由汇总：所有模块共用一套资源路由，由领域服务完成分派。"""
+"""路由汇总：专用批次恢复接口先注册，通用资源路由随后兜底。"""
 from __future__ import annotations
 
-from app.routers import resource
+from app.routers import batch_intake, resource
 
-ROUTERS = [resource]
+ROUTERS = [batch_intake, resource]

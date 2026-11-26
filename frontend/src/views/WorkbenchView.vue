@@ -15,6 +15,13 @@
       </div>
     </header>
 
+    <BatchIntakePanel
+      v-if="meta.key === 'price_crawler'"
+      ref="batchPanel"
+      :task-id="intakeTaskId"
+    />
+    <ParseQueuePanel v-else-if="meta.key === 'sample_store'" />
+
     <div class="stat-row">
       <article v-for="item in stats" :key="item.label" class="stat-card">
         <span class="stat-label">{{ item.label }}</span>
@@ -60,6 +67,15 @@
             >
               {{ action }}
             </button>
+            <button
+              v-if="meta.key === 'price_crawler'"
+              class="link"
+              type="button"
+              :data-testid="`batch-records-${row.id}`"
+              @click="openBatchRecords(row)"
+            >
+              上传批次/续办
+            </button>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -104,6 +120,8 @@ import {
   runAction as applyAction,
 } from '@/api/backend-service'
 import type { EntryRow } from '@/data/types'
+import BatchIntakePanel from '@/components/BatchIntakePanel.vue'
+import ParseQueuePanel from '@/components/ParseQueuePanel.vue'
 
 const props = defineProps<{ moduleKey: string }>()
 const meta = moduleMeta(props.moduleKey)
@@ -115,6 +133,8 @@ const filterFields = meta.fields.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const intakeTaskId = ref<number | null>(null)
+const batchPanel = ref<InstanceType<typeof BatchIntakePanel> | null>(null)
 const stats = computed(() => [
   { label: meta.metrics[0], value: total.value },
   { label: meta.metrics[1], value: rows.value.filter((row) => row.status === meta.statuses[1]).length },
@@ -163,6 +183,13 @@ async function submitCreate() {
   } finally {
     creating.value = false
   }
+}
+
+async function openBatchRecords(row: EntryRow) {
+  const id = Number(row.id)
+  intakeTaskId.value = id
+  await batchPanel.value?.openForTask(id)
+  document.getElementById('batch-intake-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 async function runAction(action: string, row: EntryRow) {

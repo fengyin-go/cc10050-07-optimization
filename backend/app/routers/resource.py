@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -94,5 +95,19 @@ def create_entry(module: str, payload: EntryPayload) -> ActionResult:
 @router.post("/{module}/{entry_id}/actions", response_model=ActionResult)
 def run_action(module: str, entry_id: int, payload: ActionPayload) -> ActionResult:
     service = require_service(module)
-    entry, message = service.run_action(entry_id, payload.action.strip())
-    return ActionResult(ok=entry is not None, message=message, entry=entry)
+    context = payload.model_dump(exclude={"action"}, exclude_none=False)
+    if isinstance(payload.remark, str) and payload.remark.strip().startswith(("{", "[")):
+        try:
+            parsed_remark = json.loads(payload.remark)
+            if isinstance(parsed_remark, dict):
+                context.update(parsed_remark)
+        except json.JSONDecodeError:
+            pass
+    nested = context.get("data")
+    if isinstance(nested, dict):
+        context.update(nested)
+    entry, message = service.run_action(entry_id, payload.action, context)
+    ok = entry is not None
+    if isinstance(entry, dict) and entry.get("ok") is False:
+        ok = False
+    return ActionResult(ok=ok, message=message, entry=entry if isinstance(entry, dict) else None, data=entry if isinstance(entry, dict) else None)

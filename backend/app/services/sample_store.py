@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.batch_recovery import batch_recovery
 from app.store import store
 
 
@@ -33,6 +34,15 @@ class SampleStoreService(BaseModuleService):
             return {"ok": False, "message": "仅已保存样本可标记解析"}
         entry["status"] = "已解析"
         entry["pending"] = False
+        queue = batch_recovery._queue_for_sample(entry)
+        if queue is not None:
+            queue["status"] = "已解析"
+            queue["updated_at"] = datetime.now(timezone.utc).isoformat()
+        item = batch_recovery._item_for_sample(entry)
+        if item is not None:
+            item["parse_status"] = "已解析"
+            item["解析状态"] = "已解析"
+        batch_recovery._append_process_record(entry, "marked_parsed", "样本已通过既有标记解析动作完成")
         site = entry.get("站点名称", "")
         row = next((m for m in store.rows("collect_metrics") if m.get("站点名称") == site), None)
         if row is not None:
@@ -48,6 +58,95 @@ class SampleStoreService(BaseModuleService):
         entry["status"] = "已过期"
         entry["pending"] = False
         return {"ok": True, "message": "样本已过期"}
+
+    # ---- 业务扩展：实际样本批次解析队列与幂等结果 ----
+
+    def parse_queue(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return batch_recovery.parse_queue(*args, **kwargs)
+
+    def claim_parse(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return batch_recovery.claim_parse(*args, **kwargs)
+
+    claim_next = claim_parse
+    claim_parse_item = claim_parse
+
+    def continue_claim(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return batch_recovery.continue_claim(*args, **kwargs)
+
+    def submit_parse_result(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return batch_recovery.record_result(*args, **kwargs)
+
+    record_parse_result = submit_parse_result
+    record_result = submit_parse_result
+    submit_result = submit_parse_result
+
+    def submit_parse_results(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return batch_recovery.record_results(*args, **kwargs)
+
+    def batch_processing_audit(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return batch_recovery.audit(*args, **kwargs)
+
+    audit_batch_processing = batch_processing_audit
+    get_processing_audit = batch_processing_audit
+
+    def get_parse_queue(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return batch_recovery.parse_queue(*args, **kwargs)
+
+    list_parse_queue = get_parse_queue
+    fetch_claimable = get_parse_queue
+
+    def claim_next_sample(self, first: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """兼容 claim_next_sample(sample_id/batch_payload, ...) 的直觉调用。"""
+        payload: dict[str, Any] = {}
+        if isinstance(first, dict):
+            payload.update(first)
+        elif first is not None:
+            existing_sample = store.find(self.MODULE, int(first)) if str(first).isdigit() else None
+            if existing_sample is not None:
+                payload["sample_id"] = first
+            else:
+                payload["batch_id"] = first
+        payload.update(kwargs)
+        return batch_recovery.claim_parse(payload, *args)
+
+    claim_sample = claim_next_sample
+    claim_next = claim_next_sample
+    claim_parse_item = claim_next_sample
+
+    def complete_parse(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return batch_recovery.record_result(*args, **kwargs)
+
+    save_parse_result = complete_parse
+    record_parse_outcome = complete_parse
+
+    def run_action(
+        self, entry_id: int, action: str, context: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        ctx = dict(context or {})
+        ctx.setdefault("sample_id", entry_id)
+        if action == "标记解析":
+            result = self.mark_parsed(entry_id)
+            return result, str(result.get("message", ""))
+        dispatch = {
+            "领取解析": lambda: batch_recovery.claim_parse(ctx),
+            "领取解析任务": lambda: batch_recovery.claim_parse(ctx),
+            "领取样本": lambda: batch_recovery.claim_parse(ctx),
+            "确认领取": lambda: batch_recovery.claim_parse(ctx),
+            "确认可领取项": lambda: batch_recovery.parse_queue(ctx.get("batch_id"), **{
+                k: v for k, v in ctx.items() if k in {"task_id", "claimable_only", "require_signed"}
+            }),
+            "继续领取": lambda: batch_recovery.continue_claim(**ctx),
+            "提交解析结果": lambda: batch_recovery.record_result(ctx),
+            "提交解析": lambda: batch_recovery.record_result(ctx),
+            "解析完成": lambda: batch_recovery.record_result(ctx),
+            "记录解析结果": lambda: batch_recovery.record_result(ctx),
+            "记录解析": lambda: batch_recovery.record_result(ctx),
+        }
+        handler = dispatch.get(action)
+        if handler is not None:
+            result = handler()
+            return result, str(result.get("message") or ("操作完成" if result.get("ok") else "操作未完成"))
+        return super().run_action(entry_id, action, context)  # type: ignore[arg-type]
 
     def dedup_by_fingerprint(self, entry_id: int) -> dict[str, Any]:
         """按样本指纹去重，重复样本直接过期。"""

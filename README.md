@@ -71,6 +71,30 @@ npm run dev
 | 人工复核队列 | `match_review` | 复核记录 | 记录编号、匹配记录、复核结论 |
 | 采集量指标 | `collect_metrics` | 指标记录 | 统计时间、站点名称、抓取量 |
 
+## 批量接收失败恢复
+
+“价格爬取任务”页提供整批接收面板，“页面样本库”页提供实际样本批次的解析队列。核心规则：
+
+- 批次号 + 任务/站点 + 页位置构成幂等作用域；同位置同内容重发只返回原回执，不新增样本。
+- 不可完整读取的页保留 `missing_reason/缺页原因`，不写样本、不进入可领取解析队列，并同步失败隔离区。
+- 同名页面在不同任务/站点下分别归属，批次和样本均记录 `task_id`、`site/站点名称` 与 `batch_uid`。
+- 解析领取支持 `claim_id` 或 `idempotency_key` 续领；结果按领取单+样本幂等，规范结果始终只有一份，重复提交只增加回执次数。
+
+常用接口：
+
+```text
+POST /api/price_crawler/batches/receive
+GET  /api/price_crawler/batches/{batch_id}
+POST /api/price_crawler/batches/{batch_id}/missing
+POST /api/price_crawler/batches/{batch_id}/sign
+GET  /api/sample_store/parse-queue?batch_id={batch_id}
+POST /api/sample_store/parse-queue/claim
+POST /api/sample_store/results
+GET  /api/sample_store/batches/{batch_id}/audit
+```
+
+也可在“价格爬取任务”页点击“构造甲乙丙中断现场”进行可视化验收。
+
 ## 约定
 
 - 全部模块共享`frontend/src/views/WorkbenchView.vue|tsx`和一套资源路由。
